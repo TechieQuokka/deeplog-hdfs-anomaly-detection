@@ -105,6 +105,10 @@ class HDFSPreprocessor:
         Paper: "In the case of HDFS log, only less than 1% of normal sessions
                 (4,855 sessions parsed from the first 100,000 log entries)"
 
+        Event_traces.csv rows are ordered by first appearance in HDFS.log.
+        We scan rows in order and collect the first EXPECTED_TRAIN_SESSIONS
+        normal sessions as training data. All other sessions become test data.
+
         Args:
             event_traces: DataFrame with [BlockId, EventSequence]
             anomaly_labels: DataFrame with [BlockId, Label]
@@ -114,57 +118,48 @@ class HDFSPreprocessor:
         """
         logger.info("Splitting train/test data...")
 
-        # Count total log entries per session
-        def count_events(x):
-            if pd.isna(x) or x == '':
-                return 0
-            # Remove brackets and split by comma
-            return len(x.strip('[]').split(','))
+        # Build label lookup
+        label_dict = dict(zip(anomaly_labels['BlockId'], anomaly_labels['Label']))
+        event_traces['_label'] = event_traces['BlockId'].map(label_dict)
 
-        event_traces['LogCount'] = event_traces['Features'].apply(count_events)
+        # Cumulative count of normal sessions in row order
+        # (Event_traces.csv is ordered by first appearance in HDFS.log)
+        event_traces['_normal_cumsum'] = (event_traces['_label'] == 'Normal').cumsum()
 
-        # Calculate cumulative log count
-        event_traces['CumulativeLogCount'] = event_traces['LogCount'].cumsum()
+        # Find cutoff: first row where we reach the target number of normal sessions
+        target = config.EXPECTED_TRAIN_SESSIONS
+        cutoff_mask = event_traces['_normal_cumsum'] <= target
 
-        # Split: first TRAIN_LOG_LIMIT log entries for training
-        train_mask = event_traces['CumulativeLogCount'] <= self.train_log_limit
+        # Training: normal sessions from the early portion of the log
+        train_normal_mask = cutoff_mask & (event_traces['_label'] == 'Normal')
+        train_block_ids = set(event_traces.loc[train_normal_mask, 'BlockId'])
 
-        train_traces = event_traces[train_mask].copy()
-        test_traces = event_traces[~train_mask].copy()
-
-        # Get corresponding labels
-        train_block_ids = set(train_traces['BlockId'])
-        test_block_ids = set(test_traces['BlockId'])
-
+        train_traces = event_traces[train_normal_mask].copy()
         train_labels = anomaly_labels[anomaly_labels['BlockId'].isin(train_block_ids)]
+
+        # Testing: everything NOT in the training set
+        test_traces = event_traces[~event_traces['BlockId'].isin(train_block_ids)].copy()
+        test_block_ids = set(test_traces['BlockId'])
         test_labels = anomaly_labels[anomaly_labels['BlockId'].isin(test_block_ids)]
 
-        # Filter training data to normal sessions only (paper: "only normal sessions for training")
-        normal_train_block_ids = set(
-            train_labels[train_labels['Label'] == 'Normal']['BlockId']
-        )
-        train_traces = train_traces[train_traces['BlockId'].isin(normal_train_block_ids)]
-        train_labels = train_labels[train_labels['Label'] == 'Normal']
-
         # Statistics
-        train_normal = (train_labels['Label'] == 'Normal').sum()
-        train_abnormal = (train_labels['Label'] == 'Anomaly').sum()
+        train_normal = len(train_traces)
         test_normal = (test_labels['Label'] == 'Normal').sum()
         test_abnormal = (test_labels['Label'] == 'Anomaly').sum()
 
-        logger.info(f"Train sessions: {len(train_traces)} (Normal: {train_normal}, Abnormal: {train_abnormal})")
+        logger.info(f"Train sessions: {train_normal} (Normal: {train_normal}, Abnormal: 0)")
         logger.info(f"Test sessions: {len(test_traces)} (Normal: {test_normal}, Abnormal: {test_abnormal})")
 
         # Verify against paper specification
-        if abs(train_normal - config.EXPECTED_TRAIN_SESSIONS) > 100:
+        if train_normal != target:
             logger.warning(
-                f"Training sessions ({train_normal}) differ significantly from "
-                f"paper specification ({config.EXPECTED_TRAIN_SESSIONS})"
+                f"Training sessions ({train_normal}) differ from "
+                f"paper specification ({target})"
             )
 
         # Drop temporary columns
-        train_traces = train_traces.drop(['LogCount', 'CumulativeLogCount'], axis=1)
-        test_traces = test_traces.drop(['LogCount', 'CumulativeLogCount'], axis=1)
+        train_traces = train_traces.drop(['_label', '_normal_cumsum'], axis=1)
+        test_traces = test_traces.drop(['_label', '_normal_cumsum'], axis=1)
 
         return train_traces, train_labels, test_traces, test_labels
 

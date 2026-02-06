@@ -1,18 +1,47 @@
 # DeepLog HDFS Anomaly Detection - Reproduction Study
 
-Exact reproduction of the DeepLog paper's HDFS log anomaly detection experiment.
+Reproduction of the DeepLog paper's HDFS log anomaly detection experiment.
 
 **Paper**: Min Du, Feifei Li, Guineng Zheng, Vivek Srikumar. "DeepLog: Anomaly Detection and Diagnosis from System Logs through Deep Learning." CCS 2017.
 
-## 📊 Target Performance (Paper Results)
+## 📊 Results
 
-| Metric | Target Value |
-|--------|-------------|
-| False Positives (FP) | 833 |
-| False Negatives (FN) | 619 |
-| Precision | ~95.1% |
-| Recall | ~96.4% |
-| **F-measure** | **96%** |
+### Paper vs Reproduction (g=9)
+
+| Metric | Paper | Ours | Gap |
+|--------|-------|------|-----|
+| False Positives | 833 | 6,417 | +5,584 |
+| False Negatives | 619 | 1,326 | +707 |
+| Precision | 95.1% | 59.2% | -35.9pp |
+| Recall | 96.4% | 87.5% | -8.9pp |
+| **F1-Score** | **96.0%** | **70.7%** | **-25.3pp** |
+
+### Top-g Sensitivity (best result at g=13)
+
+| Metric | g=9 | g=13 (best F1) |
+|--------|-----|-----------------|
+| FP | 6,417 | 2,252 |
+| FN | 1,326 | 2,307 |
+| Precision | 59.2% | 78.7% |
+| Recall | 87.5% | 78.3% |
+| F1 | 70.7% | 78.5% |
+
+### Data Split Verification
+
+| Split | Paper | Ours |
+|-------|-------|------|
+| Train (Normal) | 4,855 | 4,855 |
+| Test (Normal) | 553,366 | 553,368 |
+| Test (Anomaly) | 16,838 | 10,647 |
+
+### Gap Analysis
+
+- **FP가 7.7배 높음**: session-level OR aggregation이 sequence-level FP를 증폭시킴
+- **FP 세션 특성**: 대부분의 FP 세션은 소수의 시퀀스만 anomaly로 판정됨
+- **Rank 분포**: 정상 시퀀스의 대다수가 rank 0~1에 위치하나, 긴 꼬리 분포가 FP를 유발
+- **최적 g=13**: g를 높이면 FP 감소/FN 증가 trade-off, F1 최대 78.5%
+
+> 상세 시각화 분석은 `notebooks/analysis.ipynb` 참조.
 
 ## 🏗️ Project Structure
 
@@ -26,6 +55,8 @@ deeplog-hdfs-reproduction/
 │   ├── train.py            # Training pipeline
 │   ├── evaluate.py         # Evaluation with top-g prediction
 │   └── utils.py            # Utility functions
+├── notebooks/
+│   └── analysis.ipynb      # Results visualization and analysis
 ├── data/
 │   └── processed/          # Preprocessed sequences (generated)
 ├── checkpoints/            # Model checkpoints (generated)
@@ -34,7 +65,7 @@ deeplog-hdfs-reproduction/
 │   └── architecture.md     # System architecture documentation
 ├── main.py                 # Main execution pipeline
 ├── requirements.txt        # Python dependencies
-└── README.md              # This file
+└── README.md
 ```
 
 ## 🚀 Quick Start
@@ -42,23 +73,19 @@ deeplog-hdfs-reproduction/
 ### 1. Installation
 
 ```bash
-# Create virtual environment (recommended)
 python3.11 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate
 
-# Install dependencies
 pip install -r requirements.txt
 ```
 
 ### 2. Data Setup
 
-This project expects HDFS data at: `/mnt/e/Big Data/HDFS/HDFS_v1`
-
-The preprocessed data should contain:
+Required files (HDFS_v1 from [LogHub](https://github.com/logpai/loghub)):
 - `Event_traces.csv` - Log event sequences by block_id
 - `anomaly_label.csv` - Ground truth labels
 
-If your data is in a different location, update `DATA_ROOT` in `src/config.py`.
+Update `DATA_ROOT` in `src/config.py` to point to your data directory.
 
 ### 3. Run Complete Pipeline
 
@@ -70,89 +97,9 @@ python main.py --all
 ### 4. Run Individual Stages
 
 ```bash
-# Stage 1: Data preprocessing
-python main.py --preprocess
-
-# Stage 2: Model training
-python main.py --train
-
-# Stage 3: Model evaluation
-python main.py --evaluate
-```
-
-## 📋 Detailed Usage
-
-### Data Preprocessing
-
-The preprocessing pipeline:
-1. Loads `Event_traces.csv` and `anomaly_label.csv`
-2. Splits data according to paper specification:
-   - **Training**: First 100,000 log entries → 4,855 normal sessions
-   - **Testing**: Remaining → 553,366 normal + 16,838 abnormal sessions
-3. Generates sliding windows of size h=10
-4. Saves processed sequences to pickle files
-
-```bash
-python main.py --preprocess
-```
-
-Output:
-- `data/processed/train_sequences.pkl`
-- `data/processed/test_sequences.pkl`
-
-### Model Training
-
-Training configuration (matching paper):
-- **Window size (h)**: 10
-- **LSTM layers (L)**: 2
-- **Hidden size (α)**: 64
-- **Embedding dim**: 64
-- **Batch size**: 128
-- **Loss function**: CrossEntropyLoss
-- **Optimizer**: Adam
-
-```bash
-python main.py --train
-```
-
-The trainer includes:
-- Early stopping with patience=10
-- Learning rate scheduling
-- Checkpoint saving
-- Validation monitoring
-
-Output:
-- `checkpoints/best_model.pth` - Best model checkpoint
-
-### Model Evaluation
-
-Evaluation uses the **top-g prediction strategy** from the paper:
-- **g = 9**: Predict top-9 most probable log keys
-- If actual key is NOT in top-9 → mark as anomaly
-- Aggregate to session level: session is abnormal if ANY key is anomaly
-
-```bash
-python main.py --evaluate
-```
-
-Output:
-- `results/metrics.json` - Detailed evaluation metrics
-- Console output with comparison to paper targets
-
-### Testing Individual Components
-
-```bash
-# Test data preprocessing
-cd src && python preprocessing.py
-
-# Test dataset loading
-cd src && python dataset.py
-
-# Test model architecture
-cd src && python model.py
-
-# Test utilities
-cd src && python utils.py
+python main.py --preprocess   # Data preprocessing
+python main.py --train        # Model training
+python main.py --evaluate     # Model evaluation
 ```
 
 ## 🔧 Configuration
@@ -174,83 +121,40 @@ BATCH_SIZE = 128
 LEARNING_RATE = 0.001
 NUM_EPOCHS = 100
 EARLY_STOPPING_PATIENCE = 10
+EMBEDDING_DIM = 64
 ```
-
-### Data Paths
-```python
-DATA_ROOT = "/mnt/e/Big Data/HDFS/HDFS_v1"
-EVENT_TRACES = f"{DATA_ROOT}/preprocessed/Event_traces.csv"
-ANOMALY_LABEL = f"{DATA_ROOT}/preprocessed/anomaly_label.csv"
-```
-
-## 📊 Expected Results
-
-After running the complete pipeline, you should achieve metrics close to the paper:
-
-```
-Evaluation Results
-================================================================================
-False Positives (FP): ~833
-False Negatives (FN): ~619
-Precision: ~95.1%
-Recall: ~96.4%
-F-measure: ~96%
-```
-
-## 🐛 Troubleshooting
-
-### CUDA Out of Memory
-```bash
-# Reduce batch size in src/config.py
-BATCH_SIZE = 64  # or 32
-```
-
-### Data Files Not Found
-```bash
-# Check data path in src/config.py
-DATA_ROOT = "/path/to/your/HDFS_v1"
-```
-
-### Preprocessed Data Missing
-```bash
-# Run preprocessing first
-python main.py --preprocess
-```
-
-### Model Checkpoint Not Found
-```bash
-# Train model first
-python main.py --train
-```
-
-## 📖 Additional Documentation
-
-- **System Architecture**: See `docs/architecture.md` for detailed system design
-- **Paper Reference**: Min Du et al., CCS 2017
-- **Dataset**: HDFS_v1 from LogHub
 
 ## 🔬 Reproduction Notes
 
-This implementation follows the DeepLog paper as closely as possible:
+### Paper Specifications Implemented
+- Window size h=10
+- LSTM layers L=2, hidden units α=64
+- Number of log keys n=29
+- Top-g prediction with g=9
+- Session-level anomaly aggregation (OR)
 
-**Exact Paper Specifications**:
-- ✅ Window size h=10
-- ✅ LSTM layers L=2
-- ✅ Hidden units α=64
-- ✅ Number of log keys n=29
-- ✅ Top-g prediction with g=9
-- ✅ Training data: first 100k log entries
-- ✅ Session-level anomaly aggregation
+### Data Split Fix (Critical)
 
-**Implementation Choices** (not specified in paper):
-- Embedding dimension: 64 (common practice)
-- Optimizer: Adam (standard for LSTM)
-- Learning rate: 0.001 (may need tuning)
-- Batch size: 128 (reasonable default)
+논문에서 "first 100,000 log entries"로 학습 데이터를 정의합니다. 이 재현에서 발견한 핵심 사항:
+
+- `Event_traces.csv`의 행 순서는 `HDFS.log`에서의 최초 등장 순서와 일치 (100/100 검증)
+- 올바른 분할: 누적 **정상 세션 수**가 4,855에 도달할 때까지의 행을 학습 데이터로 사용
+- 잘못된 분할: 누적 **이벤트 수**로 100,000을 기준으로 나누면 3,684 세션 (부족)
+
+### Remaining Performance Gap
+
+논문 대비 FP가 크게 높은 원인 후보:
+1. Session-level OR aggregation이 sequence-level FP를 증폭
+2. 논문에 기술되지 않은 추가 기법이 있을 가능성 (예: threshold tuning, post-processing)
+3. 모델 하이퍼파라미터 또는 학습 데이터 커버리지 차이
+
+### Training Details
+- Best model epoch: 33 (val loss: 0.1799)
+- Training sequences: 78,093
+- Test sequences: 5,389,938
+- Trainable parameters: 70,301
 
 ## 📝 Citation
-
-If you use this reproduction in your research, please cite the original paper:
 
 ```bibtex
 @inproceedings{du2017deeplog,
@@ -266,12 +170,6 @@ If you use this reproduction in your research, please cite the original paper:
 
 This is a reproduction study for research and educational purposes.
 
-## 🤝 Contributing
-
-This is a reproduction study. For issues or improvements, please open an issue or pull request.
-
 ---
 
-**Project Status**: ✅ Implementation Complete
-
-**Last Updated**: 2026-02-06
+**Last Updated**: 2026-02-07
